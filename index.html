@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ESP32-CAM Animal Detection Monitor</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #ffffff; padding: 20px; min-height: 100vh;
+        }
+        
+        .header {
+            text-align: center; margin-bottom: 30px; padding: 20px;
+            background: rgba(255,255,255,0.05); border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+        
+        h1 {
+            color: #00ff88; margin-bottom: 10px; font-size: 2em;
+            text-shadow: 0 0 20px rgba(0,255,136,0.5);
+        }
+
+        .status-badge { display: inline-block; padding: 8px 16px; border-radius: 20px; font-weight: bold; }
+        .status-connected { background: #00ff88; color: #1a1a2e; animation: pulse 2s infinite; }
+        .status-disconnected { background: #ff3333; color: white; }
+
+        @keyframes pulse { 
+            0%,100%{opacity:1;} 
+            50%{opacity:0.7;} 
+        }
+
+        .container {
+            max-width: 1400px; margin: 0 auto;
+            display: grid; grid-template-columns: 1.2fr 1fr; gap: 20px;
+        }
+
+        @media (max-width:968px){ .container{grid-template-columns:1fr;} }
+
+        .video-panel, .results-panel {
+            background: rgba(255,255,255,0.05);
+            border: 2px solid #00ff88;
+            border-radius: 15px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        #stream { 
+            width:100%; border-radius:10px; 
+            background:#000; min-height:300px; 
+        }
+
+        .detection-box {
+            background:rgba(0,0,0,0.3);
+            border-left:4px solid #00ff88;
+            border-radius:8px;
+            padding:20px; margin:15px 0;
+            min-height:150px; text-align:center;
+        }
+
+        .log-box {
+            background:rgba(0,0,0,0.5);
+            padding:15px; margin-top:15px;
+            max-height:200px; overflow-y:auto;
+            border-radius:8px;
+            font-family:'Courier New';
+            font-size:0.85em;
+        }
+
+        .log-entry {
+            padding:5px;
+            border-bottom:1px solid rgba(255,255,255,0.1);
+        }
+
+        .config-input {
+            width: 100%;
+            padding: 10px;
+            margin-top: 10px;
+            border-radius: 6px;
+            border: 1px solid #00ff88;
+        }
+
+        .connect-btn {
+            margin-top: 10px;
+            padding: 10px 15px;
+            background: #00ff88;
+            color: #16213e;
+            border: none;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="header">
+        <h1>🎥 ESP32-CAM Animal Detection Monitor</h1>
+        <div id="status-badge" class="status-badge status-disconnected">⚠ DISCONNECTED</div>
+    </div>
+    
+    <div class="container">
+        
+        <!-- LEFT PANEL -->
+        <div class="video-panel">
+            <h2>📹 Live Camera Feed</h2>
+            <img src="" id="stream">
+
+            <div class="connection-info">
+                <strong>📡 ESP32 IP:</strong> <span id="esp-ip">Not connected</span><br>
+                <strong>🔌 WebSocket:</strong> <span id="ws-status">Disconnected</span><br>
+                <strong>📺 Stream URL:</strong> <span id="stream-url">-</span>
+            </div>
+
+            <div class="config-panel" style="margin-top:20px;">
+                <strong>⚙ Connection Settings</strong>
+                <input type="text" id="esp32-ip-input" class="config-input" placeholder="Enter ESP32 IP (e.g., 192.168.137.20)">
+                <button class="connect-btn" onclick="connectToESP32()">🔌 Connect to ESP32</button>
+            </div>
+        </div>
+
+        <!-- RIGHT PANEL -->
+        <div class="results-panel">
+
+            <h2>🧠 AI Detection Results</h2>
+
+            <div class="detection-box" id="detection-display">
+                <div class="detection-icon">👁</div>
+                <div class="no-detection">Waiting for connection...</div>
+            </div>
+
+            <div class="stat-grid" style="margin-top:20px; display:grid; grid-template-columns: repeat(3,1fr); gap:10px;">
+                <div class="stat-box"><div class="stat-value" id="inference-count">0</div>Scans</div>
+                <div class="stat-box"><div class="stat-value" id="detection-count">0</div>Detections</div>
+                <div class="stat-box"><div class="stat-value" id="processing-time">0</div>Processing (ms)</div>
+            </div>
+
+            <div class="log-box" id="log-box">
+                <div class="log-entry">📝 Waiting for data...</div>
+            </div>
+
+        </div>
+    </div>
+
+<script>
+    let ws = null;
+    let esp32IP = "";
+    let maxLogEntries = 50;
+
+    function connectToESP32() {
+        esp32IP = document.getElementById("esp32-ip-input").value.trim();
+        if (!esp32IP) return alert("Enter ESP32 IP address");
+
+        const streamURL = `http://${esp32IP}/stream`;
+        document.getElementById("stream").src = streamURL;
+        document.getElementById("stream-url").textContent = streamURL;
+        document.getElementById("esp-ip").textContent = esp32IP;
+
+        addLog("🔄 Connecting to ESP32 at " + esp32IP);
+        connectWebSocket();
+    }
+
+    function connectWebSocket() {
+        if (ws) ws.close();
+
+        const wsURL = `ws://${esp32IP}:81`;
+        addLog("🔌 Opening WebSocket: " + wsURL);
+
+        ws = new WebSocket(wsURL);
+
+        ws.onopen = () => {
+            addLog("🟢 WebSocket connected");
+            document.getElementById("status-badge").className = "status-badge status-connected";
+            document.getElementById("status-badge").textContent = "🟢 CONNECTED";
+            document.getElementById("ws-status").textContent = "Connected";
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            handleInferenceData(data);
+        };
+
+        ws.onerror = () => addLog("⚠ WebSocket error");
+
+        ws.onclose = () => {
+            addLog("❌ WebSocket closed");
+            document.getElementById("status-badge").className = "status-badge status-disconnected";
+            document.getElementById("status-badge").textContent = "⚠ DISCONNECTED";
+            document.getElementById("ws-status").textContent = "Disconnected";
+        };
+    }
+
+    function handleInferenceData(data) {
+        if (data.type !== "inference") return;
+
+        document.getElementById("inference-count").textContent = data.inference_count;
+        document.getElementById("detection-count").textContent = data.valid_detections;
+        document.getElementById("processing-time").textContent = data.processing_time;
+
+        const box = document.getElementById("detection-display");
+
+        if (data.status === "detected") {
+            box.innerHTML = `
+                <div class="detection-icon">🎯</div>
+                <div class="detection-label">${data.animal.toUpperCase()}</div>
+                <div class="detection-confidence">${(data.confidence * 100).toFixed(1)}%</div>
+            `;
+            addLog(`🎯 DETECTED: ${data.animal} (${(data.confidence * 100).toFixed(1)}%)`);
+        } else {
+            box.innerHTML = `
+                <div class="detection-icon">👁</div>
+                <div class="no-detection">No animal detected</div>
+            `;
+        }
+    }
+
+    function addLog(msg) {
+        const logBox = document.getElementById("log-box");
+        const time = new Date().toLocaleTimeString();
+
+        const entry = document.createElement("div");
+        entry.className = "log-entry";
+        entry.textContent = `[${time}] ${msg}`;
+
+        logBox.prepend(entry);
+
+        while (logBox.children.length > maxLogEntries)
+            logBox.removeChild(logBox.lastChild);
+    }
+</script>
+
+</body>
+</html>
